@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.generator import RemixGenerator, TextMusicGenerator
+from backend.job_progress import make_job_updater
 
 load_dotenv()
 
@@ -26,7 +28,7 @@ STATIC_DIR = ROOT / "static"
 for folder in (OUTPUT_DIR, UPLOAD_DIR, STATIC_DIR):
     folder.mkdir(exist_ok=True)
 
-app = FastAPI(title="AI Music Creator", version="2.0.0")
+app = FastAPI(title="AI Music Creator", version="2.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -65,6 +67,22 @@ class JobStatusResponse(BaseModel):
     model_name: str | None = None
     device: str | None = None
     download_url: str | None = None
+    progress: int = 0
+    stage: str | None = None
+    message: str | None = None
+    elapsed_seconds: float | None = None
+
+
+def _init_job(job_id: str, **fields) -> None:
+    jobs[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "stage": "queued",
+        "message": "Waiting in queue...",
+        "started_at": time.time(),
+        "elapsed_seconds": 0.0,
+        **fields,
+    }
 
 
 def _run_create(
@@ -74,8 +92,12 @@ def _run_create(
     guidance_scale: float,
     temperature: float,
 ) -> None:
+    progress = make_job_updater(jobs, job_id)
     jobs[job_id]["status"] = "generating"
+    progress("starting", 2, "Starting composition...")
+
     try:
+        remix_generator.unload()
         output_path = OUTPUT_DIR / f"{job_id}.mp3"
         result = text_generator.generate(
             prompt,
@@ -83,10 +105,14 @@ def _run_create(
             duration_seconds=duration,
             guidance_scale=guidance_scale,
             temperature=temperature,
+            on_progress=progress,
         )
         jobs[job_id].update(
             {
                 "status": "complete",
+                "progress": 100,
+                "stage": "complete",
+                "message": "Track ready!",
                 "duration_seconds": result.duration_seconds,
                 "model_name": result.model_name,
                 "device": result.device,
@@ -96,6 +122,8 @@ def _run_create(
     except Exception as exc:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(exc)
+        jobs[job_id]["message"] = str(exc)
+        jobs[job_id]["progress"] = 0
 
 
 def _run_remix(
@@ -106,8 +134,12 @@ def _run_remix(
     guidance_scale: float,
     temperature: float,
 ) -> None:
+    progress = make_job_updater(jobs, job_id)
     jobs[job_id]["status"] = "generating"
+    progress("starting", 2, "Starting remix...")
+
     try:
+        text_generator.unload()
         output_path = OUTPUT_DIR / f"{job_id}.mp3"
         result = remix_generator.remix(
             prompt,
@@ -116,10 +148,14 @@ def _run_remix(
             duration_seconds=duration,
             guidance_scale=guidance_scale,
             temperature=temperature,
+            on_progress=progress,
         )
         jobs[job_id].update(
             {
                 "status": "complete",
+                "progress": 100,
+                "stage": "complete",
+                "message": "Remix ready!",
                 "duration_seconds": result.duration_seconds,
                 "model_name": result.model_name,
                 "device": result.device,
@@ -129,6 +165,8 @@ def _run_remix(
     except Exception as exc:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(exc)
+        jobs[job_id]["message"] = str(exc)
+        jobs[job_id]["progress"] = 0
     finally:
         Path(source_path).unlink(missing_ok=True)
 
@@ -140,22 +178,23 @@ def health() -> dict:
     return {
         "status": "ok",
         "cuda_available": torch.cuda.is_available(),
-        "create_model_loaded": text_generator.model_name is not None,
-        "create_model_name": text_generator.model_name,
+        "create_model_loaded": text_generator.is_loaded,
+        "create_model_name": text_generator.model_name if text_generator.is_loaded else None,
+        "remix_model_loaded": remix_generator.is_loaded,
         "remix_model": remix_generator.model_name,
-        "version": "2.0.0",
+        "version": "2.1.0",
     }
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
 async def create_generation(request: GenerateRequest) -> GenerateResponse:
     job_id = uuid.uuid4().hex
-    jobs[job_id] = {
-        "status": "queued",
-        "job_type": "create",
-        "prompt": request.prompt.strip(),
-        "duration": request.duration,
-    }
+    _init_job(
+        job_id,
+        job_type="create",
+        prompt=request.prompt.strip(),
+        duration=request.duration,
+    )
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(
@@ -200,12 +239,14 @@ async def create_remix(
     guidance_scale = max(1.0, min(guidance_scale, 6.0))
     temperature = max(0.5, min(temperature, 2.0))
 
-    jobs[job_id] = {
-        "status": "queued",
-        "job_type": "remix",
-        "prompt": prompt.strip(),
-        "duration": duration,
-    }
+    _init_job(
+        job_id,
+        job_type="remix",
+        prompt=prompt.strip(),
+        duration=duration,
+        message="Upload received, starting remix...",
+        progress=1,
+    )
 
     loop = asyncio.get_event_loop()
     loop.run_in_executor(
@@ -228,6 +269,9 @@ def get_status(job_id: str) -> JobStatusResponse:
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
 
+    started = job.get("started_at", time.time())
+    elapsed = job.get("elapsed_seconds", round(time.time() - started, 1))
+
     download_url = f"/api/download/{job_id}" if job.get("status") == "complete" else None
     return JobStatusResponse(
         job_id=job_id,
@@ -239,6 +283,10 @@ def get_status(job_id: str) -> JobStatusResponse:
         model_name=job.get("model_name"),
         device=job.get("device"),
         download_url=download_url,
+        progress=job.get("progress", 0),
+        stage=job.get("stage"),
+        message=job.get("message"),
+        elapsed_seconds=elapsed,
     )
 
 

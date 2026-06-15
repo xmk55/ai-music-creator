@@ -8,18 +8,60 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+const STAGE_LABELS = {
+  queued: "Queued",
+  starting: "Starting",
+  downloading_model: "Downloading model",
+  loading_model: "Loading model",
+  processing_audio: "Processing upload",
+  preparing: "Preparing",
+  generating: "Generating",
+  exporting: "Exporting MP3",
+  complete: "Complete",
+};
+
 function formatError(detail) {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) return detail.map((d) => d.msg || d).join(", ");
   return "Request failed";
 }
 
+function prefix(section) {
+  return section === "create" ? "create" : "remix";
+}
+
+function updateProgressUI(section, data) {
+  const p = prefix(section);
+  const progress = data.progress ?? 0;
+  const fill = $(`${p}ProgressFill`);
+  const pct = $(`${p}ProgressPct`);
+  const statusText = $(`${p}StatusText`);
+  const statusMeta = $(`${p}StatusMeta`);
+
+  if (fill) fill.style.width = `${progress}%`;
+  if (pct) pct.textContent = `${progress}%`;
+
+  const stageLabel = STAGE_LABELS[data.stage] || data.stage || "Working";
+  const message = data.message || stageLabel;
+  if (statusText) statusText.textContent = message;
+
+  const elapsed = data.elapsed_seconds != null ? `${data.elapsed_seconds}s elapsed` : "";
+  const stage = data.stage ? stageLabel : "";
+  if (statusMeta) {
+    statusMeta.textContent = [stage, elapsed].filter(Boolean).join(" · ");
+  }
+}
+
+function resetProgressUI(section) {
+  updateProgressUI(section, { progress: 0, stage: "queued", message: "Starting...", elapsed_seconds: 0 });
+}
+
 async function checkHealth() {
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
-    const gpu = data.cuda_available ? "GPU accelerated" : "CPU mode";
-    $("systemInfo").textContent = `v${data.version} · ${gpu} · Create + Remix ready`;
+    const gpu = data.cuda_available ? "GPU accelerated" : "CPU mode (generation can take several minutes)";
+    $("systemInfo").textContent = `v${data.version} · ${gpu}`;
   } catch {
     $("systemInfo").textContent = "Connecting to server...";
   }
@@ -87,6 +129,7 @@ function setBusy(section, active) {
   panel.classList.toggle("visible", active);
   if (active) {
     $(section === "create" ? "createPlayerPanel" : "remixPlayerPanel").classList.remove("visible");
+    resetProgressUI(section);
   }
 }
 
@@ -94,8 +137,6 @@ async function pollJob(jobId, section) {
   const res = await fetch(`/api/status/${jobId}`);
   const data = await res.json();
 
-  const statusText = $(section === "create" ? "createStatusText" : "remixStatusText");
-  const statusMeta = $(section === "create" ? "createStatusMeta" : "remixStatusMeta");
   const playerPanel = $(section === "create" ? "createPlayerPanel" : "remixPlayerPanel");
   const audioPlayer = $(section === "create" ? "createAudioPlayer" : "remixAudioPlayer");
   const trackPrompt = $(section === "create" ? "createTrackPrompt" : "remixTrackPrompt");
@@ -103,14 +144,9 @@ async function pollJob(jobId, section) {
   const errorBox = section === "create" ? "createErrorBox" : "remixErrorBox";
   const pollKey = section === "create" ? "createPoll" : "remixPoll";
 
-  if (data.status === "queued") {
-    statusText.textContent = section === "remix"
-      ? "Queued — loading remix model (first run downloads ~1.5 GB)..."
-      : "Queued — loading AI model (first run may take a minute)...";
-  } else if (data.status === "generating") {
-    statusText.textContent = section === "remix" ? "Remixing your track..." : "Composing your track...";
-    statusMeta.textContent = "Generating full audio buffer for smooth playback";
-  } else if (data.status === "complete") {
+  updateProgressUI(section, data);
+
+  if (data.status === "complete") {
     clearInterval(state[pollKey]);
     state[pollKey] = null;
     setBusy(section, false);
@@ -121,7 +157,6 @@ async function pollJob(jobId, section) {
     trackPrompt.textContent = `"${data.prompt}"`;
     downloadBtn.href = url;
     playerPanel.classList.add("visible");
-    statusMeta.textContent = `${data.duration_seconds}s · ${data.model_name.split("/").pop()} · ${data.device}`;
     audioPlayer.play().catch(() => {});
   } else if (data.status === "failed") {
     clearInterval(state[pollKey]);
@@ -141,8 +176,6 @@ async function startCreate() {
 
   hideError("createErrorBox");
   setBusy("create", true);
-  $("createStatusText").textContent = "Sending prompt to AI...";
-  $("createStatusMeta").textContent = "";
 
   try {
     const res = await fetch("/api/generate", {
@@ -162,7 +195,7 @@ async function startCreate() {
     }
 
     const { job_id } = await res.json();
-    state.createPoll = setInterval(() => pollJob(job_id, "create"), 1500);
+    state.createPoll = setInterval(() => pollJob(job_id, "create"), 1000);
     pollJob(job_id, "create");
   } catch (err) {
     setBusy("create", false);
@@ -231,8 +264,6 @@ async function startRemix() {
 
   hideError("remixErrorBox");
   setBusy("remix", true);
-  $("remixStatusText").textContent = "Uploading and starting remix...";
-  $("remixStatusMeta").textContent = "";
 
   const form = new FormData();
   form.append("prompt", prompt);
@@ -250,7 +281,7 @@ async function startRemix() {
     }
 
     const { job_id } = await res.json();
-    state.remixPoll = setInterval(() => pollJob(job_id, "remix"), 1500);
+    state.remixPoll = setInterval(() => pollJob(job_id, "remix"), 1000);
     pollJob(job_id, "remix");
   } catch (err) {
     setBusy("remix", false);
