@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.30.0
+scipy>=1.11.0
+numpy>=1.26.0
+pydub>=0.25.1
+python-dotenv>=1.0.0
