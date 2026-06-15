@@ -47,8 +47,8 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=500)
     duration: float = Field(default=15.0, ge=5.0, le=30.0)
-    guidance_scale: float = Field(default=3.0, ge=1.0, le=6.0)
-    temperature: float = Field(default=1.0, ge=0.5, le=2.0)
+    guidance_scale: float = Field(default=2.5, ge=1.0, le=6.0)
+    temperature: float = Field(default=0.85, ge=0.5, le=2.0)
 
 
 class GenerateResponse(BaseModel):
@@ -214,8 +214,8 @@ async def create_generation(request: GenerateRequest) -> GenerateResponse:
 async def create_remix(
     prompt: str = Form(..., min_length=3, max_length=500),
     duration: float = Form(15.0),
-    guidance_scale: float = Form(3.0),
-    temperature: float = Form(1.0),
+    guidance_scale: float = Form(2.5),
+    temperature: float = Form(0.85),
     file: UploadFile = File(...),
 ) -> GenerateResponse:
     if not file.filename:

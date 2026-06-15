@@ -17,7 +17,7 @@ from transformers import (
     MusicgenMelodyForConditionalGeneration,
 )
 
-from backend.audio_processor import save_mp3
+from backend.audio_processor import prepare_melody_guide, save_mp3
 from backend.job_progress import ProgressCallback, ProgressTicker
 
 MODEL_SMALL = "facebook/musicgen-small"
@@ -48,6 +48,28 @@ def load_audio_file(path: str | Path, target_sr: int = 32000) -> tuple[np.ndarra
     samples = np.array(segment.get_array_of_samples(), dtype=np.float32)
     samples = samples / (2**15)
     return samples, target_sr
+
+
+def _extract_waveform(audio_values) -> np.ndarray:
+    waveform = audio_values[0].detach().cpu().numpy()
+    if waveform.ndim > 1:
+        waveform = np.mean(waveform, axis=0)
+    return np.asarray(waveform, dtype=np.float32)
+
+
+def _quality_generate_kwargs(
+    guidance_scale: float,
+    temperature: float,
+    max_new_tokens: int,
+) -> dict:
+    """Tuned sampling — lower chaos, fewer harsh artifacts."""
+    return {
+        "do_sample": True,
+        "guidance_scale": max(1.5, min(guidance_scale, 4.0)),
+        "temperature": max(0.6, min(temperature, 0.95)),
+        "top_k": 250,
+        "max_new_tokens": max_new_tokens,
+    }
 
 
 def _estimate_generate_seconds(max_new_tokens: int, device: str) -> float:
@@ -194,18 +216,15 @@ class TextMusicGenerator:
                 with torch.inference_mode():
                     return self._model.generate(
                         **inputs,
-                        do_sample=True,
-                        guidance_scale=guidance_scale,
-                        temperature=temperature,
-                        max_new_tokens=max_new_tokens,
+                        **_quality_generate_kwargs(guidance_scale, temperature, max_new_tokens),
                     )
 
             audio_values = _run_with_ticker(ticker, _generate)
 
         if on_progress:
-            on_progress("exporting", 92, "Encoding smooth MP3...")
+            on_progress("exporting", 92, "Polishing and encoding MP3...")
 
-        waveform = audio_values[0, 0].detach().cpu().numpy()
+        waveform = _extract_waveform(audio_values)
         sample_rate = self._model.config.audio_encoder.sampling_rate
         actual_duration = len(waveform) / sample_rate
 
@@ -313,9 +332,10 @@ class RemixGenerator:
 
         sample_rate = self._model.config.audio_encoder.sampling_rate
         audio_array, sr = load_audio_file(source_path, target_sr=sample_rate)
+        audio_array = prepare_melody_guide(audio_array, sr)
 
         if on_progress:
-            on_progress("preparing", 34, "Analyzing melody and preparing remix...")
+            on_progress("preparing", 34, "Extracting melody guide (filtering harsh bass/drums)...")
 
         with self._lock:
             inputs = self._processor(
@@ -344,18 +364,15 @@ class RemixGenerator:
                 with torch.inference_mode():
                     return self._model.generate(
                         **inputs,
-                        do_sample=True,
-                        guidance_scale=guidance_scale,
-                        temperature=temperature,
-                        max_new_tokens=max_new_tokens,
+                        **_quality_generate_kwargs(guidance_scale, temperature, max_new_tokens),
                     )
 
             audio_values = _run_with_ticker(ticker, _generate)
 
         if on_progress:
-            on_progress("exporting", 92, "Encoding remix MP3...")
+            on_progress("exporting", 92, "Polishing and encoding remix MP3...")
 
-        waveform = audio_values[0, 0].detach().cpu().numpy()
+        waveform = _extract_waveform(audio_values)
         actual_duration = len(waveform) / sample_rate
 
         save_mp3(waveform, output_path, sample_rate=sample_rate)
