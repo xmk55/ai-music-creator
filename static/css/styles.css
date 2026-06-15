@@ -33,10 +33,24 @@ body {
   inset: 0;
   background:
     radial-gradient(ellipse 70% 50% at 15% -5%, var(--gradient-1), transparent),
-    radial-gradient(ellipse 55% 45% at 90% 105%, var(--gradient-2), transparent);
+    radial-gradient(ellipse 55% 45% at 90% 105%, var(--gradient-2), transparent),
+    var(--bg);
   pointer-events: none;
   z-index: 0;
   transition: background 0.6s ease;
+}
+
+.bg-emoji-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.bg-emoji-layer .floating-emoji {
+  filter: blur(0.3px);
+  will-change: transform;
 }
 
 .app-shell {
@@ -115,6 +129,17 @@ body {
 .theme-options {
   display: flex;
   gap: 4px;
+  max-width: 280px;
+  overflow-x: auto;
+  padding: 2px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
+}
+
+.theme-options::-webkit-scrollbar { height: 4px; }
+.theme-options::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 4px;
 }
 
 .theme-option {
@@ -211,14 +236,45 @@ body {
 
 .floating-emoji {
   position: absolute;
-  animation: floatEmoji ease-in-out infinite;
   user-select: none;
-  filter: blur(0.2px);
+  line-height: 1;
+}
+
+.floating-emoji.anim-float {
+  animation: floatEmoji ease-in-out infinite;
+}
+
+.floating-emoji.anim-drift {
+  animation: driftEmoji ease-in-out infinite;
+}
+
+.floating-emoji.anim-pulse {
+  animation: pulseEmoji ease-in-out infinite;
+}
+
+.floating-emoji.anim-sway {
+  animation: swayEmoji ease-in-out infinite;
 }
 
 @keyframes floatEmoji {
   0%, 100% { transform: translateY(0) rotate(0deg); }
-  50% { transform: translateY(-12px) rotate(6deg); }
+  50% { transform: translateY(-18px) rotate(8deg); }
+}
+
+@keyframes driftEmoji {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  33% { transform: translate(12px, -14px) rotate(5deg); }
+  66% { transform: translate(-8px, -8px) rotate(-4deg); }
+}
+
+@keyframes pulseEmoji {
+  0%, 100% { transform: scale(1); opacity: inherit; }
+  50% { transform: scale(1.12); }
+}
+
+@keyframes swayEmoji {
+  0%, 100% { transform: translateX(0) rotate(-3deg); }
+  50% { transform: translateX(14px) rotate(3deg); }
 }
 
 .panel-content {
